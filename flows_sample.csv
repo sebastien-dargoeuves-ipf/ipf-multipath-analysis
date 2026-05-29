@@ -1,0 +1,7 @@
+srcIP,dstIP,srcPort,dstPort,protocol,application,security,expected
+172.16.12.60/24,172.16.23.20,1024-65535,3389,tcp,rdp,drop,block
+172.16.12.60/24,172.16.23.20/24,1024-65535,3389,tcp,rdp,drop,block
+172.16.12.60/24,172.16.23.20/24,1024-65535,3389,tcp,rdp,drop,allow
+172.16.12.60/24,172.16.22.20,1024-65535,443,tcp,https,drop,allow
+172.16.12.60/24,10.2.0.222,1024-65535,443,tcp,https,drop,allow
+172.16.12.60/24,10.2.0.222,1024-65535,443,tcp,https,drop,block

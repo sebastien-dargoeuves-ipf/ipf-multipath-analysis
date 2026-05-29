@@ -1,0 +1,15 @@
+# Secrets / credentials — never commit
+.env
+
+# Generated output
+results.csv
+
+# Internal / customer material (not for a public repo)
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version

@@ -1,0 +1,6 @@
+# IP Fabric Python SDK — required. Tested with 7.11.2 (IP Fabric 7.x).
+# SDK major versions track IP Fabric releases, so cap below the next major.
+ipfabric>=7.11,<8.0
+
+# .env file support — optional but recommended (the script degrades gracefully without it).
+python-dotenv>=1.0
