@@ -1,0 +1,7 @@
+srcIP,dstIP,srcPort,dstPort,protocol,application,security,comment,expected,status,verdict,details
+172.16.12.60/24,172.16.23.20,1024-65535,3389,tcp,rdp,drop,RDP from user VLAN to server,block,BLOCKED,MATCH,Blocked [zone-deny]: d1xfw01 [fw] on ge-0/0/3.0 (ports: 3389)
+172.16.12.60/24,172.16.23.20/24,1024-65535,3389,tcp,rdp,drop,RDP to whole server subnet,block,PARTIAL,MISMATCH,Reached 172.16.23.21:3389; denied [zone-deny]: d1xfw01 [fw] on ge-0/0/3.0 (ports: 3389)
+172.16.12.60/24,172.16.23.20/24,1024-65535,3389,tcp,rdp,drop,RDP to whole server subnet,allow,PARTIAL,MISMATCH,Reached 172.16.23.21:3389; denied [zone-deny]: d1xfw01 [fw] on ge-0/0/3.0 (ports: 3389)
+172.16.12.60/24,172.16.22.20,1024-65535,443,tcp,https,drop,HTTPS to web app,allow,REACHED,MATCH,Reached 172.16.22.20:443
+172.16.12.60/24,10.2.0.222,1024-65535,1-1024,tcp,https,drop,Access to AWS,assess,PARTIAL,ASSESS,"Reached 10.2.0.222:443; denied [acl-deny]: vpn1xfw01 [fw] on GigabitEthernet0/2 (ports: 1 .. 442, 444 .. 1024)"
+172.16.12.60/24,10.2.0.222,1024-65535,1024-65535,tcp,https,drop,Higher TCP ports to AWS,block,BLOCKED,MATCH,"Blocked [acl-deny]: NAE [awsVpc] on subnet-0688ce44d04efa2f7 (ports: 8080); vpn1xfw01 [fw] on GigabitEthernet0/2 (ports: 1024 .. 8079, 8081 .. 65535)"

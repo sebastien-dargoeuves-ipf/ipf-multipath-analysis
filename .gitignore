@@ -1,8 +1,11 @@
 # Secrets / credentials — never commit
 .env
 
-# Generated output
-results.csv
+# CSVs are ignored by default
+# Exception: the lab sample output, kept as a committed example.
+*.csv
+!results_sample.csv
+!flows_sample.csv
 
 # Internal / customer material (not for a public repo)
 *.xlsx

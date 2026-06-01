@@ -2,7 +2,7 @@
 
 A small Python CLI that reads network flows from a CSV, runs a **unicast path lookup** for each one
 against an [IP Fabric](https://ipfabric.io) instance, and writes the results back to a CSV with a
-descriptive status and a human-readable comment.
+descriptive status and a human-readable `details` explanation.
 
 IP Fabric's UI validates one flow at a time; this script does it in bulk via the API — handy for
 checking a large set of flows (e.g. firewall/segmentation intent) in one pass.
@@ -16,10 +16,10 @@ checking a large set of flows (e.g. firewall/segmentation intent) in one pass.
   - **BLOCKED** — a security policy denies the traffic; nothing reaches
   - **NO-PATH** — no route / unreachable (no security deny recorded)
   - **ERROR** — empty/unexpected response or a bad input row
-- The comment leads with **what actually reaches the destination** (e.g. which hosts of a subnet got
+- The `details` column leads with **what actually reaches the destination** (e.g. which hosts of a subnet got
   through), read from the path's terminal host nodes.
-- Optional **intent validation**: add an `expected` column (`allow`/`block`) and each flow gets a
-  `MATCH` / `MISMATCH` verdict — turning the run into a segmentation-policy report.
+- Optional **intent validation**: add an `expected` column (`allow`/`block`/`assess`) and each flow
+  gets a `MATCH` / `MISMATCH` / `ASSESS` verdict — turning the run into a segmentation-policy report.
 
 ## Requirements
 
@@ -76,14 +76,16 @@ python ipf_pathlookup.py --input flows.csv [--output results.csv] [--snapshot $l
 | `protocol` | no | `tcp` | `tcp`, `udp`, or `icmp` |
 | `application` | no | _(empty)_ | NGFW app name, e.g. `ssh`, `https`, `rdp` |
 | `security` | no | `drop` | `drop` = stop at security denies; `continue` = simulate past them |
-| `expected` | no | _(empty)_ | `allow` or `block` — adds a `MATCH` / `MISMATCH` verdict |
+| `expected` | no | _(empty)_ | `allow` / `block` / `assess` — adds a `MATCH` / `MISMATCH` / `ASSESS` verdict |
+| `comment` | no | _(empty)_ | Free-text note, copied straight through to the output |
 
-See [`flows_sample.csv`](flows_sample.csv) for an example.
+Any other column you add is copied through unchanged too. See
+[`flows_sample.csv`](flows_sample.csv) for an example.
 
 ## Output
 
-The input columns are copied through, with `status`, `comment`, and (when `expected` is present)
-`verdict` appended. Example run:
+The input columns (including your free-text `comment`) are copied through, with `status`,
+`details`, and — when `expected` is present — `verdict` appended. Example run:
 
 ```text
 [1/4] 172.16.12.60/24 → 172.16.23.20      tcp/3389 ... ⛔ BLOCKED  [MATCH]    Blocked [zone-deny]: d1xfw01 [fw] on ge-0/0/3.0 (ports: 3389)
@@ -94,14 +96,24 @@ The input columns are copied through, with `status`, `comment`, and (when `expec
 → results.csv   REACHED: 2  PARTIAL: 1  BLOCKED: 1   |  checks → MATCH: 3  MISMATCH: 1
 ```
 
+A full example output (from [`flows_sample.csv`](flows_sample.csv)) is committed as
+[`results_sample.csv`](results_sample.csv). Your own runs default to `results.csv`, which is
+git-ignored so scratch/real output isn't accidentally committed.
+
 ### Intent validation (`expected` → `verdict`)
 
-A flow's intent is satisfied only by a *full* outcome (`PARTIAL` matches neither):
+`expected` accepts `allow` / `block` / `assess` (synonyms accepted, e.g. `deny`, `permit`,
+`check`/`fyi`/`review` for assess). A flow's intent is satisfied only by a _full_ outcome
+(`PARTIAL` matches neither); `assess` makes no assertion and is never scored:
 
 | `expected` | REACHED | PARTIAL | BLOCKED | NO-PATH |
 | --- | --- | --- | --- | --- |
 | `allow` | MATCH | MISMATCH | MISMATCH | MISMATCH |
 | `block` | MISMATCH | MISMATCH | MATCH | MATCH |
+| `assess` | ASSESS | ASSESS | ASSESS | ASSESS |
+
+Use `assess` when you just want to **observe** a flow's outcome without a pass/fail judgment — it
+surfaces the `status`/`details` but stays out of the MATCH/MISMATCH tally (`ASSESS`).
 
 The security-critical case is **expected `block` but `REACHED`/`PARTIAL`** — traffic you meant to deny
 is getting through.

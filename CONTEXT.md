@@ -2,7 +2,7 @@
 
 ## What we're building
 
-A Python CLI script (`ipf_pathlookup.py`) that reads a list of network flows from a CSV file, runs a unicast path lookup for each flow against an IP Fabric instance via its API, and writes the results back to a CSV with a descriptive status (**REACHED / PARTIAL / BLOCKED / NO-PATH**) and a human-readable comment explaining the outcome.
+A Python CLI script (`ipf_pathlookup.py`) that reads a list of network flows from a CSV file, runs a unicast path lookup for each flow against an IP Fabric instance via its API, and writes the results back to a CSV with a descriptive status (**REACHED / PARTIAL / BLOCKED / NO-PATH**) and a human-readable `details` column explaining the outcome.
 
 The end user is a network engineer at an IP Fabric customer/prospect. They want to validate a large number of flows programmatically — something the IP Fabric UI supports one flow at a time, but the API supports in bulk.
 
@@ -59,7 +59,11 @@ File: `flows_sample.csv`
 | `protocol` | no | `tcp` | `tcp`, `udp`, or `icmp` |
 | `application` | no | _(empty)_ | App name for NGFW validation, e.g. `ssh`, `https`, `rdp` |
 | `security` | no | `drop` | `drop` = stop at security denies; `continue` = simulate past them |
-| `expected` | no | _(empty)_ | Intended outcome: `allow` or `block` (synonyms accepted). Drives the `verdict` column |
+| `expected` | no | _(empty)_ | Intended outcome: `allow` / `block` / `assess` (synonyms accepted). Drives the `verdict` column |
+| `comment` | no | _(empty)_ | Free-text note, copied straight through to the output (e.g. app name / purpose) |
+
+Any other column present in the input is copied through to the output unchanged. The script
+appends `status`, `verdict` (when `expected` is present), and `details`.
 
 **How CSV columns map onto the `Unicast` model:**
 
@@ -140,7 +144,7 @@ delivered packet (`ip.dst`, `tcp/udp.dst`), so we report `IP:ports` — and for 
 this lists only the hosts that got through.
 
 **Nodes** (`graphResult.graphData.nodes`) are devices. A node with `droppedPackets` shows where and
-on which interface/ports traffic was dropped — used to enrich the comment:
+on which interface/ports traffic was dropped — used to enrich the `details` text:
 
 ```json
 "2483": {
@@ -163,10 +167,10 @@ on which interface/ports traffic was dropped — used to enrich the comment:
 ## Status taxonomy
 
 A descriptive status (not a binary OK/NOK) is derived from `passingTraffic`, with `flags`,
-`droppedPackets`, and the arriving-packet details shaping the comment. The comment always **leads
+`droppedPackets`, and the arriving-packet details shaping the `details` text, which always **leads
 with what reaches the destination**.
 
-| `passingTraffic` | Status | Marker | Comment |
+| `passingTraffic` | Status | Marker | Details |
 | --- | --- | --- | --- |
 | `all` | **REACHED** | ✓ | "Reached \<ip:ports\>" |
 | `part` | **PARTIAL** | ◐ | "Reached \<ip:ports\>; denied [\<flags\>]: \<device\> [\<type\>] on \<iface\> (ports: …)" |
@@ -198,16 +202,19 @@ wasn't intended, and a partial leak on a flow you expected blocked is surfaced a
 
 - **allow** — `allow`, `allowed`, `pass`, `permit`, `permitted`, `reach`, `reached`, `yes`, `ok`
 - **block** — `block`, `blocked`, `deny`, `denied`, `no`
+- **assess** — `assess`, `check`, `info`, `fyi`, `review`, `observe`, `report`
 
-Verdict logic — a flow's intent is satisfied only by a _full_ outcome (`PARTIAL` satisfies neither):
+Verdict logic — a flow's intent is satisfied only by a _full_ outcome (`PARTIAL` satisfies neither).
+`assess` asserts nothing — it just surfaces the result for review and is never scored:
 
 | `expected` | REACHED | PARTIAL | BLOCKED | NO-PATH | ERROR |
 | --- | --- | --- | --- | --- | --- |
 | allow | MATCH | MISMATCH | MISMATCH | MISMATCH | n/a |
 | block | MISMATCH | MISMATCH | MATCH | MATCH | n/a |
+| assess | ASSESS | ASSESS | ASSESS | ASSESS | ASSESS |
 
 `verdict` is empty when no intent is stated, and `?` when the `expected` value is unrecognised.
-The end-of-run summary tallies the checks, e.g. `checks → MATCH: 3  MISMATCH: 1`.
+The end-of-run summary tallies the checks, e.g. `checks → MATCH: 3  MISMATCH: 1  ASSESS: 1`.
 
 > The security-critical case is **expected `block` → actual `REACHED`/`PARTIAL`** (`MISMATCH`):
 > traffic you intended to deny is getting through. In `flows_sample.csv`, RDP to `172.16.23.20/24`
@@ -237,7 +244,7 @@ load_dotenv()                       # reads .env if present (does not override s
 IPFClient                           # SDK required (no raw-requests fallback)
 build_unicast(row)                  # CSV row -> ipfabric.diagrams.Unicast model
 run_pathlookup(client, u, snap)     # client.diagram.json(u, snapshot_id=snap) -> raw dict
-interpret_result(data)              # passingTraffic + flags + droppedPackets -> (status, comment)
+interpret_result(data)              # passingTraffic + flags + droppedPackets -> (status, detail)
 main()                              # CLI arg parsing, CSV loop, output writing
 ```
 

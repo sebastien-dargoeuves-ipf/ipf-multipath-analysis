@@ -2,17 +2,22 @@
 """
 IP Fabric Bulk Path Lookup
 Reads flows from a CSV, runs unicast path lookup via the IP Fabric SDK,
-and writes results with OK/NOK status and a comment.
+and writes results with a descriptive status and details.
 
 CSV columns (all optional except srcIP, dstIP):
-  srcIP       - single IP or subnet up to /24 (e.g. 10.1.1.1, 192.168.0.0/24)
-  dstIP       - single IP or subnet up to /24
+  srcIP       - single IP or subnet up to /16 (e.g. 10.1.1.1, 192.168.0.0/16)
+  dstIP       - single IP or subnet up to /16
   srcPort     - port or range, e.g. 1024-65535, 443   (default: 1024-65535)
   dstPort     - port or range or name, e.g. 443, https (default: 443)
   protocol    - tcp / udp / icmp                       (default: tcp)
   application - app name for NGFW, e.g. ssh, https     (default: empty)
   security    - drop / continue                        (default: drop)
-  expected    - allow / block: intended outcome; adds a MATCH/MISMATCH verdict (optional)
+  expected    - allow / block / assess: intended outcome; adds a verdict column
+                (MATCH/MISMATCH, or ASSESS for assess = informational only)  (optional)
+  comment     - free-text note copied straight through to the output (optional)
+
+Any other column present in the input CSV is copied through unchanged. The script appends:
+status, [verdict if 'expected' present], details.
 
 Configuration (in priority order):
   1. CLI args:        --url / --token
@@ -218,9 +223,9 @@ def _collect_drops(nodes: dict) -> list[str]:
 
 
 def interpret_result(data: dict) -> tuple[str, str]:
-    """Return (status, comment) from a path-lookup response.
+    """Return (status, detail) from a path-lookup response.
 
-    Status is driven by `pathlookup.passingTraffic` (all / part / none); the comment
+    Status is driven by `pathlookup.passingTraffic` (all / part / none); the detail text
     leads with what actually reaches the destination.
 
       REACHED  all   - all requested traffic reaches the destination
@@ -260,12 +265,14 @@ def interpret_result(data: dict) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Expected-result check (optional 'expected' CSV column -> MATCH / MISMATCH)
+# Expected-result check (optional 'expected' CSV column -> MATCH / MISMATCH / ASSESS)
 # ---------------------------------------------------------------------------
 
 # Synonyms for the intent stated in the CSV's `expected` column.
-EXPECTED_ALLOW = {"allow", "allowed", "pass", "permit", "permitted", "reach", "reached", "yes", "ok"}
-EXPECTED_BLOCK = {"block", "blocked", "deny", "denied", "no"}
+EXPECTED_ALLOW  = {"allow", "allowed", "pass", "permit", "permitted", "reach", "reached", "yes", "ok"}
+EXPECTED_BLOCK  = {"block", "blocked", "deny", "denied", "no"}
+# 'assess' states no pass/fail intent — just surface the result for review (ASSESS).
+EXPECTED_ASSESS = {"assess", "check", "info", "fyi", "review", "observe", "report"}
 
 # A flow's intent is satisfied only when its full traffic reaches (allow) or fully
 # fails to reach (block). PARTIAL satisfies neither — a partial leak or partial outage.
@@ -276,12 +283,14 @@ _BLOCK_OK = {"BLOCKED", "NO-PATH"}
 def evaluate_expectation(expected_raw: str, status: str) -> str:
     """Compare a stated intent against the actual status.
 
-    Returns one of: '' (no intent stated), 'MATCH', 'MISMATCH', 'n/a' (status was ERROR,
-    can't judge), '?' (unrecognised expected value).
+    Returns one of: '' (no intent stated), 'MATCH', 'MISMATCH', 'ASSESS' (assess-only, not
+    scored), 'n/a' (status was ERROR, can't judge), '?' (unrecognised expected value).
     """
     exp = (expected_raw or "").strip().lower()
     if not exp:
         return ""
+    if exp in EXPECTED_ASSESS:
+        return "ASSESS"          # informational only — no pass/fail judgment
     if exp in EXPECTED_ALLOW:
         intent = "allow"
     elif exp in EXPECTED_BLOCK:
@@ -344,7 +353,8 @@ def main():
 
     out_fields   = list(rows[0].keys()) if rows else []
     has_expected = "expected" in out_fields  # optional intent column drives the verdict
-    new_fields   = ["status", "verdict", "comment"] if has_expected else ["status", "comment"]
+    # Appended columns. Any input column (e.g. a free-text 'comment') is copied through as-is.
+    new_fields   = ["status", "verdict", "details"] if has_expected else ["status", "details"]
     for field in new_fields:
         if field not in out_fields:
             out_fields.append(field)
@@ -357,14 +367,14 @@ def main():
 
         out_row = dict(row)
         try:
-            unicast         = build_unicast(row)
-            data            = run_pathlookup(client, unicast, args.snapshot)
-            status, comment = interpret_result(data)
+            unicast        = build_unicast(row)
+            data           = run_pathlookup(client, unicast, args.snapshot)
+            status, detail = interpret_result(data)
         except Exception as e:
-            status, comment = "ERROR", str(e)
+            status, detail = "ERROR", str(e)
 
         out_row["status"]  = status
-        out_row["comment"] = comment
+        out_row["details"] = detail
         verdict = ""
         if has_expected:
             verdict = evaluate_expectation(row.get("expected"), status)
@@ -373,7 +383,7 @@ def main():
 
         marker = STATUS_MARKER.get(status, "?")
         vtag   = f"[{verdict}] " if verdict else ""
-        print(f"{marker} {status:<8} {vtag}{comment[:90]}{'…' if len(comment) > 90 else ''}")
+        print(f"{marker} {status:<8} {vtag}{detail[:90]}{'…' if len(detail) > 90 else ''}")
 
         if i < len(rows):
             time.sleep(args.delay)
@@ -390,7 +400,7 @@ def main():
     line    = f"\n→ {args.output}   {summary or 'no results'}"
     if has_expected:
         vc = Counter(r.get("verdict", "") for r in results)
-        checks = "  ".join(f"{v}: {vc[v]}" for v in ("MATCH", "MISMATCH", "?", "n/a") if vc.get(v))
+        checks = "  ".join(f"{v}: {vc[v]}" for v in ("MATCH", "MISMATCH", "ASSESS", "?", "n/a") if vc.get(v))
         line += f"   |  checks → {checks}" if checks else ""
     print(line)
 
