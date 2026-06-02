@@ -1,8 +1,14 @@
-# IP Fabric Bulk Path Lookup — Project Context
+# IP Fabric Path Lookup Automation — Project Context
 
 ## What we're building
 
-A Python CLI script (`ipf_pathlookup.py`) that reads a list of network flows from a CSV file, runs a unicast path lookup for each flow against an IP Fabric instance via its API, and writes the results back to a CSV with a descriptive status (**REACHED / PARTIAL / BLOCKED / NO-PATH**) and a human-readable `details` column explaining the outcome.
+A small repo with two closely related Python CLIs that operate on the same CSV shape:
+
+- `ipf_pathlookup.py` reads a list of network flows from a CSV file, runs a unicast path lookup
+  for each flow against an IP Fabric instance via its API, and writes descriptive outcomes
+  (**REACHED / PARTIAL / BLOCKED / NO-PATH**) plus a human-readable `details` column.
+- `ipf_create_path_checks.py` reads the same flow list and creates saved **Path verification**
+  checks in IP Fabric, returning create/skip/error metadata per row.
 
 The end user is a network engineer at an IP Fabric customer/prospect. They want to validate a large number of flows programmatically — something the IP Fabric UI supports one flow at a time, but the API supports in bulk.
 
@@ -44,6 +50,24 @@ The `Unicast` model builds the correct payload for the running API version, incl
 raw request is easy to get wrong (`startingPoint`/`destinationPoint`, `firstHopAlgorithm`,
 `networkMode`). Tested against **ipfabric SDK 7.11.2** / IP Fabric 7.x.
 
+Saved path-verification checks are created through a different API:
+
+```text
+POST /api/v1/graphs/path-lookup/checks
+POST /api/v1/graphs/path-lookup/checks/exists
+```
+
+Key behavior verified on the target instance (`https://10.194.50.7`) on **June 2, 2026**:
+
+- `POST /api/graphs/path-lookup/checks` accepts a payload containing just:
+  - `expectedPassingTraffic`
+  - `parameters` built from `Unicast.model_dump(by_alias=True, exclude_none=True)`
+- the server populates `settings` in the response; the client does not need to send them
+- `POST /api/graphs/path-lookup/checks/exists` rejects `expectedPassingTraffic` and accepts only:
+  - `{"parameters": {...}}`
+- a one-row SDK test created a saved check successfully and returned `id=8`, `jobId=390`
+- a second run of the same row returned `exists=true`, so the script skips duplicates by default
+
 ---
 
 ## Input CSV format
@@ -62,8 +86,13 @@ File: `flows_sample.csv`
 | `expected` | no | _(empty)_ | Intended outcome: `allow` / `block` / `assess` (synonyms accepted). Drives the `verdict` column |
 | `comment` | no | _(empty)_ | Free-text note, copied straight through to the output (e.g. app name / purpose) |
 
-Any other column present in the input is copied through to the output unchanged. The script
-appends `status`, `verdict` (when `expected` is present), and `details`.
+Any other column present in the input is copied through to the output unchanged.
+
+For `ipf_pathlookup.py`, the script appends `status`, `verdict` (when `expected` is present), and
+`details`.
+
+For `ipf_create_path_checks.py`, the script appends `create_status`, `exists`, `check_id`,
+`job_id`, `expectedPassingTraffic`, and `details`.
 
 **How CSV columns map onto the `Unicast` model:**
 
@@ -73,6 +102,11 @@ appends `status`, `verdict` (when `expected` is present), and `details`.
 - If `protocol` is `icmp`, no L4 ports are sent (the model carries its own `icmp` type/code).
 - `security: drop` → `securedPath=True`; `continue` → `securedPath=False`.
 - `application` → `otherOptions=OtherOptions(applications=<app>)`.
+- In `ipf_create_path_checks.py`, `expected` maps to saved-check `expectedPassingTraffic`:
+  - `allow` → `all`
+  - `block` → `none`
+  - `part` / `partial` / `some` → `part`
+  - `assess` is not valid there because the API requires an explicit expected outcome
 
 ---
 
@@ -107,6 +141,40 @@ The `Unicast` model serialises to roughly this `parameters` block (the SDK wraps
 > allowed types"). `firstHopAlgorithm` is required.
 
 `snapshot` can be `"$last"` or a specific UUID.
+
+For saved-check creation, the payload is:
+
+```json
+{
+  "expectedPassingTraffic": "all",
+  "parameters": {
+    "type": "pathLookup",
+    "pathLookupType": "unicast",
+    "protocol": "icmp",
+    "startingPoint": "53.32.28.0/24",
+    "destinationPoint": "53.32.101.82/32",
+    "securedPath": true,
+    "networkMode": true,
+    "groupBy": "siteName",
+    "ttl": 128,
+    "fragmentOffset": 0,
+    "enableRegions": false,
+    "srcRegions": ".*",
+    "dstRegions": ".*",
+    "l4Options": { "type": 0, "code": 0 },
+    "otherOptions": { "applications": "(icmp|ping)", "tracked": false, "category": "", "url": "" },
+    "firstHopAlgorithm": { "type": "automatic" }
+  }
+}
+```
+
+The duplicate check uses only:
+
+```json
+{
+  "parameters": { "...": "same as above" }
+}
+```
 
 ---
 
@@ -224,7 +292,7 @@ The end-of-run summary tallies the checks, e.g. `checks → MATCH: 3  MISMATCH: 
 
 ## Configuration
 
-The script reads connection details in this priority order:
+Both scripts read connection details in this priority order:
 
 1. CLI args: `--url`, `--token`
 2. Environment variables: `IPF_URL`, `IPF_TOKEN`
@@ -237,15 +305,24 @@ The script reads connection details in this priority order:
 
 ---
 
-## Current script structure (`ipf_pathlookup.py`)
+## Current script structure
 
 ```text
-load_dotenv()                       # reads .env if present (does not override shell env)
-IPFClient                           # SDK required (no raw-requests fallback)
-build_unicast(row)                  # CSV row -> ipfabric.diagrams.Unicast model
-run_pathlookup(client, u, snap)     # client.diagram.json(u, snapshot_id=snap) -> raw dict
-interpret_result(data)              # passingTraffic + flags + droppedPackets -> (status, detail)
-main()                              # CLI arg parsing, CSV loop, output writing
+ipf_pathlookup.py
+  load_dotenv()                     # reads .env if present (does not override shell env)
+  IPFClient                         # SDK required (no raw-requests fallback)
+  build_unicast(row)                # CSV row -> ipfabric.diagrams.Unicast model
+  run_pathlookup(client, u, snap)   # client.diagram.json(u, snapshot_id=snap) -> raw dict
+  interpret_result(data)            # passingTraffic + flags + droppedPackets -> (status, detail)
+  main()                            # CLI arg parsing, CSV loop, output writing
+
+ipf_create_path_checks.py
+  load_dotenv()                     # same config behavior as the lookup script
+  build_unicast(row)                # same CSV -> Unicast mapping for API correctness
+  build_check_payload(row)          # adds expectedPassingTraffic around Unicast parameters
+  check_exists(client, payload)     # POST graphs/path-lookup/checks/exists
+  create_check(client, payload)     # POST graphs/path-lookup/checks
+  main()                            # CLI arg parsing, CSV loop, duplicate skipping, output writing
 ```
 
 ---
@@ -253,9 +330,10 @@ main()                              # CLI arg parsing, CSV loop, output writing
 ## Known issues / things to fix
 
 - No handling yet for rate limiting (HTTP 429) — currently just a fixed `--delay` between calls.
-- Output file path defaults to `results.csv` in the current working directory, not next to the input file — may be confusing.
+- Output file paths default to the current working directory, not next to the input file — may be confusing.
 - The resolved instance URL is printed, but **not** which source it came from (CLI/env/.env) — adding that would make the env-precedence gotcha above visible at a glance.
 - `verify=False` disables TLS verification (lab convenience). Revisit before any non-lab use.
+- `ipf_create_path_checks.py` treats `assess` as invalid for create, which is correct for the API but means the two scripts do not accept identical intent vocabularies.
 
 ---
 

@@ -1,25 +1,33 @@
-# IP Fabric Bulk Path Lookup
+# IP Fabric Path Lookup Automation
 
-A small Python CLI that reads network flows from a CSV, runs a **unicast path lookup** for each one
-against an [IP Fabric](https://ipfabric.io) instance, and writes the results back to a CSV with a
-descriptive status and a human-readable `details` explanation.
+A small set of Python CLIs for automating [IP Fabric](https://ipfabric.io) path lookup workflows
+from CSV input.
 
-IP Fabric's UI validates one flow at a time; this script does it in bulk via the API — handy for
-checking a large set of flows (e.g. firewall/segmentation intent) in one pass.
+The repo currently has two related scripts:
+
+- `ipf_pathlookup.py` runs a **unicast path lookup** for each CSV row and writes descriptive
+  results such as `REACHED`, `PARTIAL`, `BLOCKED`, and `NO-PATH`.
+- `ipf_create_path_checks.py` creates saved **Path verification** checks in IP Fabric from the same
+  CSV shape, with duplicate pre-checking via the API.
+
+IP Fabric's UI handles these flows one at a time; these scripts do it in bulk.
 
 ## Features
 
 - Reads flows from CSV (single IPs or subnets up to `/16`, TCP/UDP/ICMP, ports, NGFW applications).
-- Descriptive per-flow status, not just pass/fail:
+- Bulk path simulation with descriptive per-flow status:
   - **REACHED** — all requested traffic reaches the destination
   - **PARTIAL** — some destination hosts/ports reach, others are denied
   - **BLOCKED** — a security policy denies the traffic; nothing reaches
   - **NO-PATH** — no route / unreachable (no security deny recorded)
   - **ERROR** — empty/unexpected response or a bad input row
-- The `details` column leads with **what actually reaches the destination** (e.g. which hosts of a subnet got
-  through), read from the path's terminal host nodes.
+- Bulk saved-check creation using the same CSV input.
+- Duplicate detection before create via `POST /api/graphs/path-lookup/checks/exists`.
+- The path lookup `details` column leads with **what actually reaches the destination** (e.g. which
+  hosts of a subnet got through), read from the path's terminal host nodes.
 - Optional **intent validation**: add an `expected` column (`allow`/`block`/`assess`) and each flow
-  gets a `MATCH` / `MISMATCH` / `ASSESS` verdict — turning the run into a segmentation-policy report.
+  either gets a `MATCH` / `MISMATCH` / `ASSESS` verdict (`ipf_pathlookup.py`) or maps to saved-check
+  `expectedPassingTraffic` (`ipf_create_path_checks.py`).
 
 ## Requirements
 
@@ -53,6 +61,8 @@ cp .env.example .env
 
 ## Usage
 
+### Run bulk path lookups
+
 ```bash
 python ipf_pathlookup.py --input flows.csv [--output results.csv] [--snapshot $last] [--delay 0.2]
 ```
@@ -63,6 +73,22 @@ python ipf_pathlookup.py --input flows.csv [--output results.csv] [--snapshot $l
 | `--output` | `results.csv` | Output CSV path |
 | `--snapshot` | `$last` | Snapshot ID or `$last` |
 | `--delay` | `0.2` | Seconds between API calls |
+| `--url` / `--token` | env / `.env` | IP Fabric URL and API token |
+
+### Create saved path checks
+
+```bash
+python ipf_create_path_checks.py --input flows.csv [--output path_checks_results.csv] [--snapshot $last] [--delay 0.2]
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--input` | _(required)_ | Input CSV path |
+| `--output` | `path_checks_results.csv` | Output CSV path |
+| `--snapshot` | `$last` | Snapshot ID for SDK context |
+| `--delay` | `0.2` | Seconds between API calls |
+| `--limit` | `0` | Only process the first `N` rows |
+| `--force-create` | `false` | Create even if the same parameters already exist |
 | `--url` / `--token` | env / `.env` | IP Fabric URL and API token |
 
 ## Input CSV format
@@ -76,13 +102,15 @@ python ipf_pathlookup.py --input flows.csv [--output results.csv] [--snapshot $l
 | `protocol` | no | `tcp` | `tcp`, `udp`, or `icmp` |
 | `application` | no | _(empty)_ | NGFW app name, e.g. `ssh`, `https`, `rdp` |
 | `security` | no | `drop` | `drop` = stop at security denies; `continue` = simulate past them |
-| `expected` | no | _(empty)_ | `allow` / `block` / `assess` — adds a `MATCH` / `MISMATCH` / `ASSESS` verdict |
+| `expected` | no | _(empty)_ | `allow` / `block` / `assess` for lookup verdicts; maps to `all` / `none` / `part` for saved checks |
 | `comment` | no | _(empty)_ | Free-text note, copied straight through to the output |
 
 Any other column you add is copied through unchanged too. See
 [`flows_sample.csv`](flows_sample.csv) for an example.
 
-## Output
+## Outputs
+
+### `ipf_pathlookup.py`
 
 The input columns (including your free-text `comment`) are copied through, with `status`,
 `details`, and — when `expected` is present — `verdict` appended. Example run:
@@ -100,7 +128,30 @@ A full example output (from [`flows_sample.csv`](flows_sample.csv)) is committed
 [`results_sample.csv`](results_sample.csv). Your own runs default to `results.csv`, which is
 git-ignored so scratch/real output isn't accidentally committed.
 
-### Intent validation (`expected` → `verdict`)
+### `ipf_create_path_checks.py`
+
+The input columns are copied through, with these extra fields appended:
+
+- `create_status` — `CREATED`, `SKIPPED`, or `ERROR`
+- `exists` — whether the check already existed before create
+- `check_id` — the saved path-check ID returned by IP Fabric
+- `job_id` — the async job ID returned by IP Fabric
+- `expectedPassingTraffic` — the value sent to IP Fabric
+- `details` — a short create/skip/error message
+
+Typical one-row output:
+
+```text
+[1/1] 53.32.28.0/24 -> 53.32.101.82 icmp [VDS] ... CREATED id=8 job=390
+```
+
+On rerun, the duplicate pre-check skips creation by default:
+
+```text
+[1/1] 53.32.28.0/24 -> 53.32.101.82 icmp [VDS] ... SKIPPED existing
+```
+
+### Intent handling (`expected`)
 
 `expected` accepts `allow` / `block` / `assess` (synonyms accepted, e.g. `deny`, `permit`,
 `check`/`fyi`/`review` for assess). A flow's intent is satisfied only by a _full_ outcome
@@ -118,11 +169,20 @@ surfaces the `status`/`details` but stays out of the MATCH/MISMATCH tally (`ASSE
 The security-critical case is **expected `block` but `REACHED`/`PARTIAL`** — traffic you meant to deny
 is getting through.
 
+For `ipf_create_path_checks.py`, `expected` is interpreted as the saved-check target:
+
+- `allow` and its synonyms map to `expectedPassingTraffic=all`
+- `block` and its synonyms map to `expectedPassingTraffic=none`
+- `part` / `partial` / `some` map to `expectedPassingTraffic=part`
+- `assess` is not valid for saved-check creation, because IP Fabric requires an explicit expected result
+
 ## Notes
 
 - TLS verification is disabled (`verify=False`) for lab convenience — revisit for production use.
 - Path lookup results are a **simulation**. Treat the output as draft validation evidence and have a
   network engineer review it before it feeds any audit or compliance deliverable.
+- The saved-check create workflow uses the SDK to build the `parameters` payload, then posts to
+  `graphs/path-lookup/checks` and `graphs/path-lookup/checks/exists`.
 
 ## License
 
